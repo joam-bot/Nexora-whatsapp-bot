@@ -3,125 +3,241 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// ==========================================
-// CONFIGURATION — À remplir avec tes valeurs
-// ==========================================
 const CONFIG = {
-  VERIFY_TOKEN: "nexora_webhook_2024",       // Token que tu mettras sur Meta
-  WHATSAPP_TOKEN: "COLLE_TON_ACCESS_TOKEN_ICI",  // Token d'accès Meta
-  PHONE_NUMBER_ID: "COLLE_TON_PHONE_NUMBER_ID_ICI", // ID numéro de téléphone Meta
-  ANTHROPIC_API_KEY: "COLLE_TA_CLE_ANTHROPIC_ICI",  // Clé API Anthropic
+  VERIFY_TOKEN: "nexora_webhook_2024",
+  WHATSAPP_TOKEN: process.env.WHATSAPP_TOKEN,
+  PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID,
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  OWNER_PHONE: "2250705759223", // Numéro du patron pour les notifications
 };
 
-// Mémoire des conversations (par numéro de téléphone)
+// Mémoire des conversations
 const conversations = {};
+// Suivi des relances
+const followUps = {};
 
-// Prompt de l'agent commercial Nexora Digital
-const SYSTEM_PROMPT = `Tu es l'assistant commercial de Nexora Digital, une agence spécialisée dans la création de sites internet professionnels et référencés sur Google, conçus pour générer des clients.
+const SYSTEM_PROMPT = `Tu es l'assistant commercial de Nexora Digital, une agence de création de sites internet professionnels référencés sur Google, conçus pour générer des clients. Site web : nexoradigita.com
 
-Ton rôle : conduire chaque prospect jusqu'à l'achat, comme un expert marketing fort en conversion.
+Ton rôle : conduire chaque prospect jusqu'à l'achat comme un expert marketing de haut niveau.
 
-Offres de Nexora Digital :
-- Site vitrine professionnel (présence en ligne, design soigné)
-- Site vitrine + SEO Google (visibilité sur Google, génération de leads)
-- Site e-commerce (boutique en ligne pour vendre)
-- Pack complet (site + SEO + maintenance)
+═══════════════════════════════
+OFFRES NEXORA DIGITAL
+═══════════════════════════════
 
-Budget moyen : moins de 200 000 FCFA selon l'offre choisie.
+1. 🌐 SITE VITRINE — 120 000 FCFA
+• Design moderne et responsive
+• Jusqu'à 5 pages
+• Formulaire de contact
+• Optimisation mobile
+• Livraison en 24h
+• Intégration réseaux sociaux
+→ Prix négociable minimum : 80 000 FCFA (ne jamais descendre en dessous)
 
-Stratégie de vente :
-1. Accueillir chaleureusement et identifier le besoin (quel business, quel objectif)
-2. Présenter l'offre la plus adaptée avec bénéfices concrets (plus de clients, visibilité Google, crédibilité)
-3. Traiter les objections sur le prix avec empathie (ROI, paiement en plusieurs fois possible)
-4. Closer : proposer un appel, un devis gratuit ou un rendez-vous
-5. Ne jamais laisser la conversation mourir — toujours finir par une question ou une action
+2. ⭐ SITE PROFESSIONNEL — 150 000 FCFA (POPULAIRE)
+• Tout du pack Vitrine
+• Jusqu'à 10 pages
+• SEO avancé Google
+• Blog intégré
+• Animations premium
+• Support prioritaire 30 jours
+• Analytics et suivi
+• PUBLICITÉ INCLUSE 🎯
+→ Prix négociable minimum : 105 000 FCFA (ne jamais descendre en dessous)
 
-Ton ton : professionnel, chaleureux, rassurant, persuasif mais pas agressif.
+3. 🛒 E-COMMERCE — 300 000 FCFA
+• Tout du pack Professionnel
+• Boutique en ligne complète
+• Gestion des produits
+• Paiement en ligne
+• Gestion des commandes
+• Tableau de bord
+• Formation incluse
+• Support 60 jours
+→ Prix négociable minimum : 210 000 FCFA (ne jamais descendre en dessous)
 
-Important :
-- Réponds en français uniquement
-- Réponds en 2-4 phrases maximum par message (format WhatsApp)
-- Utilise des emojis modérément (1-2 par message max)
-- Tu es un assistant, pas un humain — si on te demande directement, sois honnête`;
+4. 🔧 SITE SUR MESURE — Sur devis
+• Architecture personnalisée
+• Fonctionnalités avancées
+• Système utilisateurs complexe
+• API et intégrations
+• Scalabilité enterprise
+• Support dédié 90 jours
+• Maintenance prioritaire
+→ Collecter les besoins et dire qu'un devis sera envoyé sous 24h
 
-// ==========================================
+═══════════════════════════════
+CONDITIONS DE PAIEMENT
+═══════════════════════════════
+• 50% avant le début des travaux
+• 50% après livraison complète (toutes modifications incluses)
+• Paiement par Mobile Money ou virement
+
+═══════════════════════════════
+RÈGLES DE NÉGOCIATION
+═══════════════════════════════
+• Si le client négocie le prix, tu peux réduire jusqu'au minimum autorisé
+• Ne JAMAIS descendre en dessous du minimum sous aucun prétexte
+• Valorise toujours ce qui est inclus avant de baisser le prix
+• Propose le paiement en 2 fois comme argument rassurant
+• Si le client dit que c'est trop cher, mets en avant le ROI (retour sur investissement)
+
+═══════════════════════════════
+STRATÉGIE DE VENTE
+═══════════════════════════════
+1. Accueillir chaleureusement, identifier le business et l'objectif
+2. Recommander l'offre la plus adaptée avec bénéfices concrets
+3. Orienter en priorité vers le SITE PROFESSIONNEL (meilleur rapport qualité/prix + pub incluse)
+4. Traiter les objections avec empathie et arguments solides
+5. Closer : demander confirmation et collecter nom + disponibilité pour démarrer
+6. Quand le client dit OUI ou confirme vouloir commander → écrire exactement : [CLIENT_CLOSÉ] suivi des détails
+
+═══════════════════════════════
+RELANCES AUTOMATIQUES
+═══════════════════════════════
+Si le client ne répond plus après avoir montré de l'intérêt :
+- Relance 1 (après 1h) : message doux de rappel
+- Relance 2 (après 24h) : message avec une valeur ajoutée ou offre limitée
+- Relance 3 (après 48h) : dernier message avant clôture
+
+═══════════════════════════════
+FORMAT DES RÉPONSES
+═══════════════════════════════
+• Toujours en français
+• 2-4 phrases max par message (format WhatsApp)
+• 1-2 emojis max par message
+• Ton : professionnel, chaleureux, persuasif sans être agressif
+• Toujours terminer par une question ou un appel à l'action
+
+IMPORTANT : Quand un client est closé (dit OUI et confirme), inclus dans ta réponse le tag [CLIENT_CLOSÉ] avec son nom et l'offre choisie. Ce tag sera intercepté par le système pour notifier le patron.`;
+
+// ═══════════════════════════════
 // WEBHOOK — Vérification Meta
-// ==========================================
+// ═══════════════════════════════
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-
   if (mode === "subscribe" && token === CONFIG.VERIFY_TOKEN) {
-    console.log("✅ Webhook vérifié par Meta");
+    console.log("✅ Webhook vérifié");
     res.status(200).send(challenge);
   } else {
-    console.log("❌ Échec vérification webhook");
     res.sendStatus(403);
   }
 });
 
-// ==========================================
-// WEBHOOK — Réception des messages
-// ==========================================
+// ═══════════════════════════════
+// WEBHOOK — Réception messages
+// ═══════════════════════════════
 app.post("/webhook", async (req, res) => {
-  res.sendStatus(200); // Répondre immédiatement à Meta
-
+  res.sendStatus(200);
   try {
     const body = req.body;
     if (body.object !== "whatsapp_business_account") return;
 
-    const entry = body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const messages = value?.messages;
+    const message = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (!message) return;
 
-    if (!messages || messages.length === 0) return;
-
-    const message = messages[0];
-    const from = message.from; // Numéro du client
+    const from = message.from;
     const msgType = message.type;
 
-    // On traite uniquement les messages texte
+    // Annuler la relance en cours si le client répond
+    if (followUps[from]) {
+      clearTimeout(followUps[from].timer1);
+      clearTimeout(followUps[from].timer2);
+      clearTimeout(followUps[from].timer3);
+      delete followUps[from];
+    }
+
     if (msgType !== "text") {
-      await sendWhatsAppMessage(from, "Bonjour 👋 Je peux uniquement traiter les messages texte pour le moment. Comment puis-je vous aider ?");
+      await sendMessage(from, "Je traite uniquement les messages texte pour le moment. Comment puis-je vous aider ? 😊");
       return;
     }
 
     const userText = message.text.body;
-    console.log(`📩 Message de ${from}: ${userText}`);
+    console.log(`📩 ${from}: ${userText}`);
 
-    // Initialiser l'historique si nouveau contact
-    if (!conversations[from]) {
-      conversations[from] = [];
-    }
-
-    // Ajouter le message du client à l'historique
+    if (!conversations[from]) conversations[from] = [];
     conversations[from].push({ role: "user", content: userText });
+    if (conversations[from].length > 30) conversations[from] = conversations[from].slice(-30);
 
-    // Limiter l'historique à 20 messages pour éviter les coûts excessifs
-    if (conversations[from].length > 20) {
-      conversations[from] = conversations[from].slice(-20);
-    }
-
-    // Appeler Claude
     const reply = await callClaude(conversations[from]);
-
-    // Ajouter la réponse à l'historique
     conversations[from].push({ role: "assistant", content: reply });
 
-    // Envoyer la réponse sur WhatsApp
-    await sendWhatsAppMessage(from, reply);
-    console.log(`✅ Réponse envoyée à ${from}`);
+    // Détecter si client closé
+    if (reply.includes("[CLIENT_CLOSÉ]")) {
+      const cleanReply = reply.replace(/\[CLIENT_CLOSÉ\][^\n]*/g, "").trim();
+      await sendMessage(from, cleanReply);
 
-  } catch (error) {
-    console.error("❌ Erreur webhook:", error.message);
+      // Extraire les infos du closing
+      const closingInfo = reply.match(/\[CLIENT_CLOSÉ\](.*)/)?.[1] || "Détails non disponibles";
+      await notifyOwner(from, closingInfo);
+    } else {
+      await sendMessage(from, reply);
+      // Programmer les relances si pas de réponse
+      programmerRelances(from);
+    }
+
+  } catch (err) {
+    console.error("❌ Erreur:", err.message);
   }
 });
 
-// ==========================================
-// FONCTION — Appel à Claude (Anthropic)
-// ==========================================
+// ═══════════════════════════════
+// RELANCES AUTOMATIQUES
+// ═══════════════════════════════
+function programmerRelances(from) {
+  if (followUps[from]) {
+    clearTimeout(followUps[from].timer1);
+    clearTimeout(followUps[from].timer2);
+    clearTimeout(followUps[from].timer3);
+  }
+
+  followUps[from] = {
+    timer1: setTimeout(async () => {
+      if (!conversations[from]) return;
+      const relance1 = await callClaude([
+        ...conversations[from],
+        { role: "user", content: "[SYSTÈME: Le client n'a pas répondu depuis 1h. Envoie une relance douce et naturelle pour relancer la conversation sans être insistant.]" }
+      ]);
+      await sendMessage(from, relance1);
+      conversations[from].push({ role: "assistant", content: relance1 });
+    }, 60 * 60 * 1000), // 1h
+
+    timer2: setTimeout(async () => {
+      if (!conversations[from]) return;
+      const relance2 = await callClaude([
+        ...conversations[from],
+        { role: "user", content: "[SYSTÈME: Le client n'a pas répondu depuis 24h. Envoie une relance avec une valeur ajoutée, une info utile ou une offre limitée dans le temps.]" }
+      ]);
+      await sendMessage(from, relance2);
+      conversations[from].push({ role: "assistant", content: relance2 });
+    }, 24 * 60 * 60 * 1000), // 24h
+
+    timer3: setTimeout(async () => {
+      if (!conversations[from]) return;
+      const relance3 = await callClaude([
+        ...conversations[from],
+        { role: "user", content: "[SYSTÈME: Le client n'a pas répondu depuis 48h. Envoie un dernier message de relance final, chaleureux, en laissant la porte ouverte.]" }
+      ]);
+      await sendMessage(from, relance3);
+      conversations[from].push({ role: "assistant", content: relance3 });
+      delete followUps[from];
+    }, 48 * 60 * 60 * 1000), // 48h
+  };
+}
+
+// ═══════════════════════════════
+// NOTIFICATION PATRON
+// ═══════════════════════════════
+async function notifyOwner(clientPhone, details) {
+  const message = `🔥 *NOUVEAU CLIENT CLOSÉ !*\n\n📱 Numéro client : +${clientPhone}\n📋 Détails : ${details}\n\n✅ Contacte ce client pour finaliser le paiement !`;
+  await sendMessage(CONFIG.OWNER_PHONE, message);
+  console.log(`🎉 Notification closing envoyée au patron`);
+}
+
+// ═══════════════════════════════
+// APPEL CLAUDE API
+// ═══════════════════════════════
 async function callClaude(history) {
   const response = await axios.post(
     "https://api.anthropic.com/v1/messages",
@@ -142,10 +258,10 @@ async function callClaude(history) {
   return response.data.content[0].text;
 }
 
-// ==========================================
-// FONCTION — Envoi message WhatsApp
-// ==========================================
-async function sendWhatsAppMessage(to, text) {
+// ═══════════════════════════════
+// ENVOI MESSAGE WHATSAPP
+// ═══════════════════════════════
+async function sendMessage(to, text) {
   await axios.post(
     `https://graph.facebook.com/v19.0/${CONFIG.PHONE_NUMBER_ID}/messages`,
     {
@@ -163,11 +279,8 @@ async function sendWhatsAppMessage(to, text) {
   );
 }
 
-// ==========================================
-// DÉMARRAGE SERVEUR
-// ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Nexora Bot démarré sur le port ${PORT}`);
-  console.log(`📡 Webhook disponible sur /webhook`);
+  console.log(`🚀 Nexora Bot v2 démarré sur le port ${PORT}`);
 });
+
