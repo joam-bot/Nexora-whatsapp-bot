@@ -165,6 +165,21 @@ MÉTHODES DE PAIEMENT
 → Ne donne le nom du titulaire (Joseph Paré) que si le client le demande explicitement
 
 ═══════════════════════════════════════
+DEMANDES DE MODIFICATIONS
+═══════════════════════════════════════
+Si un client (déjà signé) demande des modifications sur son site :
+→ Réponds chaleureusement : "Pas de souci, je note ta demande 👌 Je transmets ça à l'équipe maintenant !"
+→ Écris EXACTEMENT à la fin de ta réponse : [MODIFICATION_DEMANDÉE] Numéro : +NUMERO | Détail : DESCRIPTION_MODIFICATION
+
+═══════════════════════════════════════
+DEMANDES D'APPEL
+═══════════════════════════════════════
+Si un prospect ou client veut appeler ou parler de vive voix :
+→ Réponds chaleureusement et donne le numéro
+→ Dis-lui : "Bien sûr ! Tu peux m'appeler ou m'envoyer un message WhatsApp au *0705759223* 📲 Je suis disponible pour toi !"
+→ Écris EXACTEMENT à la fin de ta réponse : [APPEL_DEMANDÉ] Numéro prospect : +NUMERO
+
+═══════════════════════════════════════
 MESSAGES VOCAUX
 ═══════════════════════════════════════
 Si le client envoie un vocal :
@@ -304,7 +319,19 @@ app.post("/webhook", async (req, res) => {
       const cleanReply = reply.replace(/\[PAIEMENT_CONFIRMÉ\][^\n]*/g, "").trim();
       await sendMessage(from, cleanReply);
       const details = reply.match(/\[PAIEMENT_CONFIRMÉ\](.*)/)?.[1] || "";
-      await notifyOwner(from, details);
+      await notifyOwner(from, `💰 *ACOMPTE REÇU — NOUVEAU CLIENT !*\n\n📱 Client : +${from}\n${details}\n\n🚀 Lance la création du site dès maintenant !`);
+
+    } else if (reply.includes("[MODIFICATION_DEMANDÉE]")) {
+      const cleanReply = reply.replace(/\[MODIFICATION_DEMANDÉE\][^\n]*/g, "").trim();
+      await sendMessage(from, cleanReply);
+      const details = reply.match(/\[MODIFICATION_DEMANDÉE\](.*)/)?.[1] || "";
+      await notifyOwner(from, `✏️ *DEMANDE DE MODIFICATION*\n\n📱 Client : +${from}\n${details}\n\nInterviens pour gérer cette modification !`);
+
+    } else if (reply.includes("[APPEL_DEMANDÉ]")) {
+      const cleanReply = reply.replace(/\[APPEL_DEMANDÉ\][^\n]*/g, "").trim();
+      await sendMessage(from, cleanReply);
+      await notifyOwner(from, `📞 *UN PROSPECT VEUT T'APPELER !*\n\n📱 Numéro : +${from}\n\nIl va t'appeler ou t'écrire sur le 0705759223. Tiens-toi prêt !`);
+
     } else {
       await sendMessage(from, reply);
       programmerRelances(from);
@@ -372,9 +399,9 @@ function programmerRelances(from) {
 // ═══════════════════════════════
 // NOTIFICATION PATRON
 // ═══════════════════════════════
-async function notifyOwner(clientPhone, details) {
-  const message = `💰 *ACOMPTE REÇU — NOUVEAU CLIENT !*\n\n📱 Client : +${clientPhone}\n${details}\n\n🚀 Lance la création du site dès maintenant !`;
+async function notifyOwner(clientPhone, message) {
   await sendMessage(CONFIG.OWNER_PHONE, message);
+  console.log(`🔔 Notification envoyée pour +${clientPhone}`);
 }
 
 // ═══════════════════════════════
