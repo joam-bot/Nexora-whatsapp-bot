@@ -1,6 +1,5 @@
 const express = require("express");
 const axios = require("axios");
-const { Pool } = require("pg");
 const app = express();
 app.use(express.json());
 
@@ -10,208 +9,196 @@ const CONFIG = {
   PHONE_NUMBER_ID: process.env.PHONE_NUMBER_ID,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   OWNER_PHONE: "2250705759223",
-  DATABASE_URL: process.env.DATABASE_URL,
 };
 
-// ═══════════════════════════════
-// BASE DE DONNÉES PostgreSQL
-// ═══════════════════════════════
-const pool = new Pool({
-  connectionString: CONFIG.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
-async function initDB() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS conversations (
-      phone VARCHAR(20) PRIMARY KEY,
-      messages JSONB DEFAULT '[]',
-      created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS known_contacts (
-      phone VARCHAR(20) PRIMARY KEY,
-      added_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-  console.log("✅ Base de données initialisée");
-}
-
-async function getConversation(phone) {
-  const res = await pool.query("SELECT * FROM conversations WHERE phone = $1", [phone]);
-  return res.rows[0] || null;
-}
-
-async function saveConversation(phone, messages) {
-  await pool.query(
-    `INSERT INTO conversations (phone, messages, updated_at)
-     VALUES ($1, $2, NOW())
-     ON CONFLICT (phone)
-     DO UPDATE SET messages = $2, updated_at = NOW()`,
-    [phone, JSON.stringify(messages)]
-  );
-}
-
-async function isKnownContact(phone) {
-  const res = await pool.query("SELECT phone FROM known_contacts WHERE phone = $1", [phone]);
-  return res.rows.length > 0;
-}
-
-async function markAsKnownContact(phone) {
-  await pool.query(
-    `INSERT INTO known_contacts (phone) VALUES ($1) ON CONFLICT DO NOTHING`,
-    [phone]
-  );
-}
-
+const conversations = {};
+const knownContacts = new Set();
 const followUpTimers = {};
+const prospectData = {};
 
-// ═══════════════════════════════
-// SYSTEM PROMPT
-// ═══════════════════════════════
 const SYSTEM_PROMPT = `Tu es le conseiller commercial de Nexora Digital, une agence spécialisée dans la création de sites internet professionnels conçus pour générer des clients. Site web : nexoradigita.com
 
-Ton rôle est d'être un agent marketing ultra performant. Tu dois convertir chaque nouveau prospect en client en lui montrant concrètement comment un site internet peut transformer son business. Tu parles comme un vrai conseiller humain — naturel, chaleureux, professionnel. Pas de formules robotiques. Pas trop formel non plus. Tu vas droit au but.
+Tu es un excellent commercial — dynamique, humain, professionnel. Tu n'es jamais robotique. Tu écoutes vraiment le prospect, tu le comprends, tu le rassures, et tu le guides naturellement vers l'achat. Les gens doivent se sentir compris et à l'aise avec toi. C'est comme ça qu'on convertit.
 
 ═══════════════════════════════════════
-OFFRES NEXORA DIGITAL
+DEUX CONTEXTES DE CONVERSATION
 ═══════════════════════════════════════
 
-1. 🌐 SITE VITRINE — 110 000 FCFA
-Pour qui : freelances, artisans, prestataires de services, petites entreprises
-Ce que ça fait concrètement :
-• Design moderne et responsive (beau sur téléphone et ordinateur)
-• Jusqu'à 5 pages (accueil, services, à propos, contact...)
-• Formulaire de contact pour recevoir des demandes directement
-• Intégration réseaux sociaux
-• Optimisation mobile
-• Livraison en 24h
-• SEO de base intégré : ton site sera indexé sur Google et commencera à apparaître dans les recherches
-Prix minimum si négociation : 80 000 FCFA (ne jamais descendre en dessous)
+🔵 CONTEXTE 1 — CAMPAGNE META (Facebook/Instagram Ads)
+Le prospect écrit suite à une publicité Facebook/Instagram. Tu le reconnais car son premier message contient un visuel ou une référence à une annonce Meta.
 
-2. ⭐ SITE PROFESSIONNEL — 150 000 FCFA (RECOMMANDÉ)
-Pour qui : entreprises qui veulent vraiment des clients via internet
-Ce que ça fait concrètement :
-• Tout du pack Vitrine
-• Jusqu'à 10 pages
-• SEO avancé : ton site est optimisé pour être bien positionné sur Google — quand quelqu'un cherche ton service à Abidjan, tu apparais en premier
-• Google t'épingle : grâce au SEO, Google reconnaît ton site comme une référence dans ton domaine
-• Blog intégré pour publier du contenu et renforcer ta visibilité
-• Animations premium pour un rendu professionnel haut de gamme
-• Analytics et suivi : tu vois combien de personnes visitent ton site chaque jour
-• Support prioritaire 30 jours
-• 🎯 PUBLICITÉ GOOGLE ADS INCLUSE : des annonces payantes pour apparaître immédiatement en tête des recherches Google — même avant les concurrents qui ont un site depuis des années
-Prix minimum si négociation : 120 000 FCFA (ne jamais descendre en dessous)
+Dans ce cas, tes offres sont :
 
-3. 🛒 E-COMMERCE — 300 000 FCFA
-Pour qui : vendeurs, boutiques, marques qui veulent vendre en ligne
-Ce que ça fait concrètement :
-• Tout du pack Professionnel
-• Boutique en ligne complète avec catalogue produits
-• Paiement en ligne intégré (Mobile Money, carte...)
-• Gestion des commandes et des stocks
-• Tableau de bord pour suivre tes ventes
-• Formation complète incluse pour gérer ta boutique seul
-• Support 60 jours
-Prix minimum si négociation : 270 000 FCFA (ne jamais descendre en dessous)
+• SITE VITRINE PROFESSIONNEL — 60 000 FCFA
+  - Design moderne et professionnel
+  - Optimisé pour convertir les visiteurs en clients
+  - SEO intégré : visible sur Google, ton site remonte dans les recherches
+  - Nom de domaine + hébergement inclus
+  - Livraison en moins de 48h
+  - Paiement en 2 fois : 30 000 FCFA pour démarrer, 30 000 FCFA à la livraison
+  → Prix plancher si négociation : ne jamais descendre sous 45 000 FCFA
 
-4. 🔧 SITE SUR MESURE — Sur devis
-Pour qui : projets spéciaux, plateformes, SaaS, streaming
-• Architecture personnalisée selon le besoin
-• Fonctionnalités avancées sur mesure
-• API et intégrations complexes
-• Support dédié 90 jours
-→ Collecter les besoins précis et promettre un devis sous 24h
+• SITE E-COMMERCE — 150 000 FCFA
+  - Boutique en ligne complète pour vendre 24h/24
+  - Gestion des produits, commandes et paiements en ligne
+  - SEO avancé + optimisation conversion
+  - Nom de domaine + hébergement inclus
+  - Formation incluse pour gérer ta boutique seul
+  - Paiement en 2 fois : 75 000 FCFA pour démarrer, 75 000 FCFA à la livraison
+  → Prix plancher si négociation : ne jamais descendre sous 120 000 FCFA
+
+🟢 CONTEXTE 2 — PROSPECTS ORGANIQUES (WhatsApp direct)
+Le prospect écrit directement sans passer par une pub Meta.
+
+Dans ce cas, tes offres sont :
+
+• SITE VITRINE — 110 000 FCFA
+  - Design moderne et responsive
+  - Jusqu'à 5 pages
+  - SEO de base : indexé sur Google
+  - Nom de domaine + hébergement inclus
+  - Formulaire de contact, réseaux sociaux
+  - Livraison en 24h
+  - Paiement : 55 000 FCFA avant + 55 000 FCFA à la livraison
+  → Plancher : 80 000 FCFA
+
+• SITE PROFESSIONNEL — 150 000 FCFA ⭐ (RECOMMANDÉ)
+  - Tout du pack Vitrine
+  - Jusqu'à 10 pages
+  - SEO avancé : ton site apparaît en tête sur Google
+  - Google t'épingle comme référence dans ton domaine
+  - Blog, animations premium, analytics
+  - Support prioritaire 30 jours
+  - 🎯 PUBLICITÉ GOOGLE ADS INCLUSE
+  - Nom de domaine + hébergement inclus
+  - Paiement : 75 000 FCFA avant + 75 000 FCFA à la livraison
+  → Plancher : 120 000 FCFA
+
+• SITE E-COMMERCE — 300 000 FCFA
+  - Tout du pack Pro
+  - Boutique en ligne complète
+  - Paiement en ligne, gestion commandes
+  - Formation + support 60 jours
+  - Nom de domaine + hébergement inclus
+  - Paiement : 150 000 FCFA avant + 150 000 FCFA à la livraison
+  → Plancher : 270 000 FCFA
+
+• SITE SUR MESURE — Sur devis
+  Collecte les besoins et promets un devis sous 24h
 
 ═══════════════════════════════════════
-CONDITIONS DE PAIEMENT
+STRATÉGIE DE CONVERSION
 ═══════════════════════════════════════
-• 50% d'acompte AVANT de commencer (c'est ce qui confirme la commande)
-• 50% restant à la livraison finale (après toutes les modifications souhaitées)
 
-Numéros de dépôt pour l'acompte :
+ÉTAPE 1 — Écouter et comprendre
+Avant tout, identifie le business du prospect, son activité, ses objectifs, ses difficultés actuelles. Pose des questions ouvertes. Montre que tu t'intéresses vraiment à lui.
+
+ÉTAPE 2 — Créer la prise de conscience
+Aide le prospect à réaliser ce qu'il perd sans site internet :
+- Des clients qui le cherchent sur Google et trouvent ses concurrents à la place
+- Une image peu professionnelle qui fait douter les prospects
+- Des ventes perdues chaque jour faute de présence en ligne
+Formule ça avec ses mots, son secteur, sa réalité.
+
+ÉTAPE 3 — Présenter la solution adaptée
+Recommande l'offre la plus adaptée à son activité avec des bénéfices concrets :
+- Restaurateur → "Quand quelqu'un cherche 'restaurant Abidjan', tu apparais en premier"
+- Coiffeuse → "Tes clientes partagent ton site. Tu gagnes en crédibilité instantanément"
+- Vendeur → "Ta boutique est ouverte 24h/24, tu vends même quand tu dors"
+- Prestataire → "Tu parais 10x plus sérieux qu'un concurrent sans site"
+Pour Meta Ads : oriente vers le site à 60 000 FCFA en insistant sur la rapidité (48h) et le SEO
+
+ÉTAPE 4 — Rassurer et lever les freins
+"C'est trop cher" → Un seul client obtenu via le site rembourse tout l'investissement
+"J'ai pas besoin" → Combien de clients tu perds chaque mois sans visibilité ?
+"Je vais réfléchir" → Crée une légère urgence sans pression
+"Comment vous faites les sites ?" → "On a une équipe spécialisée avec des outils pros qui nous permettent de livrer vite et bien — l'important c'est le résultat final pour ton business 😊"
+
+ÉTAPE 5 — Négocier intelligemment
+Valorise toujours l'offre avant de baisser. Propose d'abord le paiement en 2 fois.
+Ne descends jamais sous les prix planchers indiqués.
+
+ÉTAPE 6 — Collecter les infos du projet
+Une fois le client convaincu, collecte ces infos avant le paiement :
+• Nom de l'entreprise / activité
+• Description de l'activité
+• Couleurs préférées / style souhaité
+• Logo disponible ? (oui/non)
+• Photos disponibles ? (oui/non)
+• Textes / contenus disponibles ?
+• Réseaux sociaux existants ?
+• Exemples de sites qu'il aime ?
+• Nom de domaine souhaité ?
+
+ÉTAPE 7 — Closer et encaisser
+→ Explique le processus : 50% d'acompte pour démarrer
+→ Donne les numéros de dépôt
+→ Attends sa confirmation de paiement
+→ Quand il confirme avoir payé → écris EXACTEMENT :
+[PAIEMENT_CONFIRMÉ] Numéro : +NUMERO | Offre : NOM_OFFRE | Acompte : MONTANT | Infos projet : RÉSUMÉ_INFOS
+
+═══════════════════════════════════════
+CLASSEMENT DES PROSPECTS
+═══════════════════════════════════════
+Classe mentalement chaque prospect selon son niveau d'intérêt :
+- 🔥 Chaud : prêt à acheter, demande les prix ou le paiement
+- 🟡 Tiède : intéressé mais hésite, pose des questions
+- ❄️ Froid : curieux mais pas encore convaincu du besoin
+
+Adapte ton approche selon le niveau. Pour les froids, insiste sur la prise de conscience avant les prix.
+
+═══════════════════════════════════════
+CAHIERS DES CHARGES
+═══════════════════════════════════════
+Si un prospect envoie un cahier des charges (PDF ou texte) :
+→ Réponds immédiatement : "Parfait, je prends le temps de bien analyser ton cahier des charges pour te faire une proposition adaptée. Je reviens vers toi dans 1 heure avec tous les détails 👌"
+→ Après 1 heure (simulée par le système) : reviens avec une analyse structurée des points clés : fonctionnalités demandées, type de site recommandé, délai estimé, prix proposé
+
+Si un prospect demande un cahier des charges :
+→ Génère un cahier des charges complet et professionnel basé sur toutes les infos qu'il t'a données : objectifs, activité, pages souhaitées, fonctionnalités, style, délais, budget
+
+═══════════════════════════════════════
+MÉTHODES DE PAIEMENT
+═══════════════════════════════════════
 • Orange Money : 0705759223
 • Wave : 0502643219
 → Ne donne le nom du titulaire (Joseph Paré) que si le client le demande explicitement
 
 ═══════════════════════════════════════
-STRATÉGIE DE VENTE ET CONVERSION
+MESSAGES VOCAUX
 ═══════════════════════════════════════
-
-ÉTAPE 1 — Identifier le business
-Demande ce que fait le prospect, son activité, son objectif. Écoute vraiment.
-
-ÉTAPE 2 — Montrer les bénéfices concrets
-Ne vends pas un "site internet". Vends des clients, de la visibilité, de la crédibilité.
-Exemples selon l'activité :
-- Restaurateur → "Quand quelqu'un cherche 'restaurant Abidjan Cocody', il te trouve toi en premier"
-- Coiffeuse → "Tes clientes te recommandent, elles envoient ton site. Ça inspire confiance"
-- Vendeur → "Tu vends même quand tu dors — ta boutique est ouverte 24h/24"
-- Prestataire → "Tu parais 10x plus sérieux qu'un concurrent sans site"
-
-ÉTAPE 3 — Recommander la bonne offre
-Oriente en priorité vers le SITE PROFESSIONNEL à 150 000 FCFA car :
-→ La pub Google Ads est incluse = retour sur investissement immédiat
-→ Le SEO avancé = visibilité durable sur Google
-→ Meilleur rapport qualité/prix du catalogue
-
-Si le budget est vraiment limité → propose le Site Vitrine à 110 000 FCFA
-Si le prospect vend des produits → propose l'E-Commerce
-Si le besoin est complexe → demande les détails pour un devis sur mesure
-
-ÉTAPE 4 — Gérer les objections
-"C'est trop cher" → Parle du ROI : un seul client obtenu via le site rembourse l'investissement
-"J'ai pas besoin" → Demande combien de clients il perd chaque mois faute de visibilité en ligne
-"Je vais réfléchir" → Crée une légère urgence, propose de réserver sa place
-"J'ai déjà un site" → Propose une refonte ou le SEO/pub pour booster ce qui existe
-
-ÉTAPE 5 — Négociation
-Tu peux négocier les prix mais de manière raisonnée. Valorise toujours l'offre avant de baisser.
-Propose d'abord le paiement en 2 fois comme solution avant de toucher au prix.
-Ne dépasse JAMAIS les minimums indiqués pour chaque offre.
-
-ÉTAPE 6 — Closer
-Quand le client est convaincu, guide-le vers le paiement :
-→ Explique le processus : 50% d'acompte pour démarrer
-→ Donne les numéros de dépôt
-→ Demande-lui de confirmer après le dépôt
-→ Quand il confirme avoir payé → écris exactement : [PAIEMENT_CONFIRMÉ] Numéro client : +NUMERO | Offre : NOM_OFFRE | Montant acompte : MONTANT FCFA
+Si le client envoie un vocal :
+"Je reçois bien ton message 😊 Pour pouvoir te répondre précisément, est-ce que tu peux m'écrire ce que tu cherches ? Ça me permettra de t'orienter vers la meilleure solution pour toi !"
 
 ═══════════════════════════════════════
 RELANCES AUTOMATIQUES
 ═══════════════════════════════════════
-Si le client ne répond plus :
-- Relance 1 (1h) : rappel doux, demander si des questions subsistent
-- Relance 2 (24h) : valeur ajoutée, cas concret d'un client dans son secteur
-- Relance 3 (48h) : dernier message chaleureux, laisser la porte ouverte
-
-═══════════════════════════════════════
-MESSAGES VOCAUX
-═══════════════════════════════════════
-Si le client envoie un message vocal, réponds :
-"Je reçois bien ton message 😊 Pour pouvoir te répondre précisément, est-ce que tu peux m'écrire ce que tu cherches ? Ça me permettra de t'orienter vers la meilleure solution pour toi !"
+Si le prospect ne répond plus :
+- 1h : relance douce, demande si il a des questions
+- 24h : argument percutant sur ce qu'il perd sans site
+- 48h : dernier message chaleureux, porte ouverte
 
 ═══════════════════════════════════════
 RÈGLES DE COMMUNICATION
 ═══════════════════════════════════════
 • Toujours en français
-• 2-4 phrases max par message — tu es sur WhatsApp, pas dans un email
+• 2-4 phrases max par message — format WhatsApp
 • 1-2 emojis max, bien placés
-• Ton naturel, humain, pas robotique — parle comme un vrai conseiller
+• Ton dynamique, naturel, humain — jamais robotique
 • Toujours terminer par une question ou une invitation à agir
-• Utilise "tu" plutôt que "vous" pour être plus proche
+• Utilise "tu" pour être proche
 • Évite les listes à puces dans tes messages — parle normalement
-• Ne dis jamais "En tant qu'assistant IA..." ou toute formule similaire`;
+• Ne mentionne JAMAIS les outils no-code ou la technologie utilisée
+• Ne dis jamais "En tant qu'assistant IA..."`;
 
 // ═══════════════════════════════
-// WEBHOOK — Vérification Meta
+// WEBHOOK — Vérification
 // ═══════════════════════════════
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
   if (mode === "subscribe" && token === CONFIG.VERIFY_TOKEN) {
-    console.log("✅ Webhook vérifié");
     res.status(200).send(challenge);
   } else {
     res.sendStatus(403);
@@ -233,14 +220,11 @@ app.post("/webhook", async (req, res) => {
     const from = message.from;
     const msgType = message.type;
 
-    // Filtre contacts connus
-    const known = await isKnownContact(from);
-    if (known) {
+    if (knownContacts.has(from)) {
       console.log(`⏭️ Contact connu ignoré : ${from}`);
       return;
     }
 
-    // Annuler relances si le client répond
     if (followUpTimers[from]) {
       clearTimeout(followUpTimers[from].t1);
       clearTimeout(followUpTimers[from].t2);
@@ -248,33 +232,74 @@ app.post("/webhook", async (req, res) => {
       delete followUpTimers[from];
     }
 
-    // Message vocal → encourager à écrire
+    // Message vocal
     if (msgType === "audio") {
       await sendMessage(from, "Je reçois bien ton message 😊 Pour pouvoir te répondre précisément, est-ce que tu peux m'écrire ce que tu cherches ? Ça me permettra de t'orienter vers la meilleure solution pour toi !");
       return;
     }
 
+    // Détecter contexte Meta Ads (message avec référence visuelle/annonce)
+    let metaAdsContext = false;
+    if (message.referral || message.context?.referred_product) {
+      metaAdsContext = true;
+    }
+
     if (msgType !== "text") {
-      await sendMessage(from, "Pour mieux t'aider, envoie-moi un message texte 😊 Je suis là pour répondre à toutes tes questions !");
+      await sendMessage(from, "Pour mieux t'aider, envoie-moi un message texte 😊");
       return;
     }
 
     const userText = message.text.body;
     console.log(`📩 ${from}: ${userText}`);
 
-    // Charger historique depuis DB
-    const conv = await getConversation(from);
-    let messages = conv ? conv.messages : [];
+    if (!conversations[from]) {
+      conversations[from] = [];
+      // Injecter contexte Meta Ads si détecté
+      if (metaAdsContext) {
+        conversations[from].push({
+          role: "user",
+          content: "[SYSTÈME : Ce prospect vient d'une campagne publicitaire Meta (Facebook/Instagram). Utilise les offres du CONTEXTE 1 : Site Vitrine à 60 000 FCFA et E-Commerce à 150 000 FCFA. Accueille-le chaleureusement en faisant référence à l'offre qu'il a vue.]"
+        });
+        conversations[from].push({
+          role: "assistant",
+          content: "[Contexte Meta Ads enregistré]"
+        });
+      }
+    }
 
-    messages.push({ role: "user", content: userText });
-    if (messages.length > 40) messages = messages.slice(-40);
+    conversations[from].push({ role: "user", content: userText });
+    if (conversations[from].length > 40) conversations[from] = conversations[from].slice(-40);
 
-    const reply = await callClaude(messages);
-    messages.push({ role: "assistant", content: reply });
+    // Détecter cahier des charges
+    const isCahierDesCharges = userText.toLowerCase().includes("cahier des charges") ||
+      userText.toLowerCase().includes("cahier de charge") ||
+      msgType === "document";
 
-    await saveConversation(from, messages);
+    let reply;
 
-    // Détecter paiement confirmé
+    if (isCahierDesCharges && msgType === "document") {
+      // Simuler analyse avec délai d'1 heure
+      reply = "Parfait, je prends le temps de bien analyser ton cahier des charges pour te faire une proposition adaptée. Je reviens vers toi dans 1 heure avec tous les détails 👌";
+      await sendMessage(from, reply);
+      conversations[from].push({ role: "assistant", content: reply });
+
+      // Revenir après 1h avec analyse
+      setTimeout(async () => {
+        const analyseMsg = await callClaude([
+          ...conversations[from],
+          { role: "user", content: "[SYSTÈME : 1 heure s'est écoulée. Génère maintenant une analyse professionnelle du cahier des charges reçu avec : points clés identifiés, type de site recommandé, fonctionnalités principales, délai estimé et prix proposé.]" }
+        ]);
+        await sendMessage(from, analyseMsg);
+        conversations[from].push({ role: "assistant", content: analyseMsg });
+        await saveConversation(from, conversations[from]);
+      }, 60 * 60 * 1000);
+
+      return;
+    }
+
+    reply = await callClaude(conversations[from]);
+    conversations[from].push({ role: "assistant", content: reply });
+
     if (reply.includes("[PAIEMENT_CONFIRMÉ]")) {
       const cleanReply = reply.replace(/\[PAIEMENT_CONFIRMÉ\][^\n]*/g, "").trim();
       await sendMessage(from, cleanReply);
@@ -290,22 +315,24 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+function saveConversation(from, messages) {
+  conversations[from] = messages;
+}
+
 // ═══════════════════════════════
-// ROUTE — Ajouter contacts connus
+// AJOUTER CONTACTS CONNUS
 // ═══════════════════════════════
-app.post("/contacts/add", async (req, res) => {
+app.post("/contacts/add", (req, res) => {
   const { phones } = req.body;
   if (!phones || !Array.isArray(phones)) {
     return res.status(400).json({ error: "Envoie un tableau de numéros" });
   }
-  for (const phone of phones) {
-    await markAsKnownContact(phone.replace(/\D/g, ""));
-  }
+  phones.forEach(p => knownContacts.add(p.replace(/\D/g, "")));
   res.json({ success: true, added: phones.length });
 });
 
 // ═══════════════════════════════
-// RELANCES AUTOMATIQUES
+// RELANCES
 // ═══════════════════════════════
 function programmerRelances(from) {
   if (followUpTimers[from]) {
@@ -316,42 +343,27 @@ function programmerRelances(from) {
 
   followUpTimers[from] = {
     t1: setTimeout(async () => {
-      const conv = await getConversation(from);
-      if (!conv) return;
-      const msgs = [...conv.messages, {
-        role: "user",
-        content: "[SYSTÈME RELANCE 1h : Le prospect n'a pas répondu depuis 1h. Envoie une relance naturelle et humaine pour reprendre la conversation, sans être insistant. Demande si il a des questions.]"
-      }];
+      if (!conversations[from]) return;
+      const msgs = [...conversations[from], { role: "user", content: "[SYSTÈME RELANCE 1h : Le prospect n'a pas répondu depuis 1h. Relance douce et naturelle, demande si il a des questions.]" }];
       const reply = await callClaude(msgs);
       await sendMessage(from, reply);
-      conv.messages.push({ role: "assistant", content: reply });
-      await saveConversation(from, conv.messages);
+      conversations[from].push({ role: "assistant", content: reply });
     }, 60 * 60 * 1000),
 
     t2: setTimeout(async () => {
-      const conv = await getConversation(from);
-      if (!conv) return;
-      const msgs = [...conv.messages, {
-        role: "user",
-        content: "[SYSTÈME RELANCE 24h : Le prospect n'a pas répondu depuis 24h. Envoie une relance avec un argument percutant sur les bénéfices d'un site internet pour son business ou une offre limitée dans le temps.]"
-      }];
+      if (!conversations[from]) return;
+      const msgs = [...conversations[from], { role: "user", content: "[SYSTÈME RELANCE 24h : Pas de réponse depuis 24h. Relance avec un argument fort sur ce qu'il perd sans site internet chaque jour.]" }];
       const reply = await callClaude(msgs);
       await sendMessage(from, reply);
-      conv.messages.push({ role: "assistant", content: reply });
-      await saveConversation(from, conv.messages);
+      conversations[from].push({ role: "assistant", content: reply });
     }, 24 * 60 * 60 * 1000),
 
     t3: setTimeout(async () => {
-      const conv = await getConversation(from);
-      if (!conv) return;
-      const msgs = [...conv.messages, {
-        role: "user",
-        content: "[SYSTÈME RELANCE 48h : Dernier message de relance. Chaleureux, sans pression. Laisse la porte ouverte pour qu'il revienne quand il sera prêt.]"
-      }];
+      if (!conversations[from]) return;
+      const msgs = [...conversations[from], { role: "user", content: "[SYSTÈME RELANCE 48h : Dernier message. Chaleureux, sans pression, laisse la porte ouverte pour qu'il revienne quand il est prêt.]" }];
       const reply = await callClaude(msgs);
       await sendMessage(from, reply);
-      conv.messages.push({ role: "assistant", content: reply });
-      await saveConversation(from, conv.messages);
+      conversations[from].push({ role: "assistant", content: reply });
       delete followUpTimers[from];
     }, 48 * 60 * 60 * 1000),
   };
@@ -363,7 +375,6 @@ function programmerRelances(from) {
 async function notifyOwner(clientPhone, details) {
   const message = `💰 *ACOMPTE REÇU — NOUVEAU CLIENT !*\n\n📱 Client : +${clientPhone}\n${details}\n\n🚀 Lance la création du site dès maintenant !`;
   await sendMessage(CONFIG.OWNER_PHONE, message);
-  console.log(`🎉 Notification paiement envoyée`);
 }
 
 // ═══════════════════════════════
@@ -390,33 +401,17 @@ async function callClaude(messages) {
 }
 
 // ═══════════════════════════════
-// ENVOI MESSAGE WHATSAPP
+// ENVOI MESSAGE
 // ═══════════════════════════════
 async function sendMessage(to, text) {
   await axios.post(
     `https://graph.facebook.com/v19.0/${CONFIG.PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: text },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${CONFIG.WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
+    { messaging_product: "whatsapp", to, type: "text", text: { body: text } },
+    { headers: { Authorization: `Bearer ${CONFIG.WHATSAPP_TOKEN}`, "Content-Type": "application/json" } }
   );
 }
 
-// ═══════════════════════════════
-// DÉMARRAGE
-// ═══════════════════════════════
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
-  await initDB();
-  console.log(`🚀 Nexora Bot v4 démarré sur le port ${PORT}`);
+app.listen(PORT, () => {
+  console.log(`🚀 Nexora Bot v5 démarré sur le port ${PORT}`);
 });
-
-
